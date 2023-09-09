@@ -1,11 +1,14 @@
+
+%array%
 %{
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
-int	colcount = 0, currcol =	0, linecount = 1, tabwidth = 8,	changes	= 0, rewritetab	= 0;
-char	tftempl[] = "/tmp/untabifyXXXXXX";
+int	colcount = 0, currcol =	0, linecount = 1, tabwidth = 4,	changes	= 0, rewritetab	= 0, pendlines = 0, savelength = 0;
+char	tftempl[] = "/tmp/tabifyXXXXXX";
+char	savewhite[YYLMAX];
 
 %}
 
@@ -13,62 +16,78 @@ char	tftempl[] = "/tmp/untabifyXXXXXX";
 
 [ \t]+$	{	changes++;	}
 "\r"	{	changes++;	}
-"\n"	{	ECHO;	colcount = currcol = 0;	linecount++;	}
-"\t"	{	currcol	+= tabwidth - currcol %	tabwidth; }
-" "	{	currcol++;	}
+"\n"	{	colcount = currcol = 0; pendlines++; linecount++;	}
+^[ \t]+	{	int i;
+			for (i = 0;  i < yyleng;  i++)  {
+				int  ch = yytext[i];
+				savewhite[i] = ch;
+				if (ch == ' ')
+					currcol++;
+				else
+					currcol += tabwidth - currcol % tabwidth;
+			}
+			savelength = yyleng;
+		}
 "\f"	{	putc('\n', yyout);	colcount = currcol = 0;	linecount++;  changes++;	}
-.	{	int ech, ch;
-		while  (currcol	> colcount)  {
-			int  newcol = colcount + tabwidth - colcount % tabwidth;
-			if  (newcol > currcol)
-				break;
-			putc('\t', yyout);
-			colcount = newcol;
-		}
-		while  (currcol	> colcount)  {
-			colcount++;
-			putc(' ', yyout);
-		}
-		ech = yytext[0];
-		ECHO;
-		colcount++;
-		/* Avoid managling strings other than rewriting	tabs if	required */
-		if  (ech == '\'' || ech	== '\"')  {
-			for  (;;)  {
-				ch = input();
-				if  (ch	== EOF)
-					error("EOF in string");
-				if  (rewritetab	&& ch == '\t')	{
-					putc('\\', yyout);
-					putc('t', yyout);
-					colcount += 2;
-					continue;
-				}
-				putc(ch, yyout);
-				colcount++;
-				if  (ch	== ech)
-					break;
-				if  (ch	== '\\')  {
-					ch = input();
-					if  (ch	== EOF)
-						error("EOF in string after \\");
-					putc(ch, yyout);
+\t		{
+			if (rewritetab)  {
+				do {
+					putc(' ', yyout);
 					colcount++;
-				}
+				}  while  ((colcount % tabwidth) != 0);
+				changes++;
+			}
+			else  {
+				ECHO;
+				colcount += tabwidth - colcount % tabwidth;
+				currcol = colcount;
 			}
 		}
-		currcol	= colcount;
-		changes++;
+.	{
+		while (pendlines > 0)  {
+			putc('\n', yyout);
+			pendlines--;
+		}
+
+		if  (currcol != colcount)  {
+			int  newlen = 0;
+			char	newwhite[YYLMAX];
+			while  (currcol	> colcount)  {
+				int  newcol = colcount + tabwidth - colcount % tabwidth;
+				if  (newcol > currcol)
+					break;
+				putc('\t', yyout);
+				newwhite[newlen++] = '\t';
+				colcount = newcol;
+			}
+			while  (currcol	> colcount)  {
+				colcount++;
+				putc(' ', yyout);
+				newwhite[newlen++] = ' ';
+			}
+			if  (newlen != savelength || strncmp(newwhite, savewhite, newlen) != 0)
+				changes++;
+		}
+		ECHO;
+		colcount++;
+		currcol++;
 	}
 %%
 
-main(int argc, char **argv)
+int main(int argc, char **argv)
 {
-	int	ch, errors = 0,	verbose	= 0;
+	int	ch, errors = 0,	verbose	= 0, nofinalnl = 0;
+	char	*tw;
 	extern	char	*optarg;
 	extern	int	optind;
 
-	while  ((ch = getopt(argc, argv, "t:vR")) != EOF)  {
+	if  ((tw = getenv("TABWIDTH")))  {
+		int  ntw = atoi(tw);
+		if  (ntw > 1  &&  ntw < 100)
+			tabwidth = ntw;
+	}
+
+	while  ((ch = getopt(argc, argv, "t:vRN")) != EOF)  {
 		switch	(ch)  {
 		default:
 			fprintf(stderr,	"Usage: %s [ -t n ] [ -o file ] [-R] [file]\n",	argv[0]);
@@ -85,6 +104,9 @@ main(int argc, char **argv)
 			break;
 		case 'R':
 			rewritetab++;
+			break;
+		case 'N':
+			nofinalnl++;
 			break;
 		}
 	}
@@ -105,6 +127,15 @@ main(int argc, char **argv)
 		yyin = inf;
 		yyout =	outf;
 		yylex();
+		if  (pendlines != 0)  {
+			if (nofinalnl)
+				changes++;
+			else  {
+				if (pendlines != 1)
+					changes++;
+				putc('\n', outf);
+			}
+		}
 		printf("%s : ",	argv[optind]);
 		if  (verbose)
 			printf("%d lines %d changes", linecount, changes);
@@ -112,10 +143,9 @@ main(int argc, char **argv)
 			changes	= 0;
 			fseek(outf, 0L,	0);
 			fseek(inf, 0L, 0);
-			ftruncate(fileno(inf), 0L);
+			ch = ftruncate(fileno(inf), 0L);
 			while  ((ch = getc(outf)) != EOF)
 				putc(ch, inf);
-			changes	= 0;
 			printf(" - updated\n");
 		}
 		else
@@ -129,4 +159,3 @@ main(int argc, char **argv)
 
 	return	errors > 0? 1: 0;
 }
-

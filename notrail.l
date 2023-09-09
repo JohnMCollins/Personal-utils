@@ -1,4 +1,4 @@
-%{
+ %{
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -24,7 +24,7 @@ char	tftempl[] = "/tmp/notrailXXXXXX";
 
 int  main(int argc, char **argv)
 {
-	int	ch, errors = 0,	verbose	= 2;
+	int	ch, errors = 0,	verbose	= 2, nofinalnl = 0;
 	extern	char	*optarg;
 	extern	int	optind;
 
@@ -58,17 +58,19 @@ int  main(int argc, char **argv)
 		yyin = inf;
 		yyout =	outf;
 		yylex();
-		if (pendlines > 0)  {
-			putc('\n', outf);
-			if  (--pendlines > 0)  {
+		if  (pendlines != 0)  {
+			if (nofinalnl)
 				changes++;
-				pendlines = 0;
+			else  {
+				if (pendlines != 1)
+					changes++;
+				putc('\n', outf);
 			}
 		}
 		if (changes != 0)  {
 			fseek(outf, 0L,	0);
 			fseek(inf, 0L, 0);
-			ftruncate(fileno(inf), 0L);
+			ch = ftruncate(fileno(inf), 0L);
 			while  ((ch = getc(outf)) != EOF)
 				putc(ch, inf);
 		}
