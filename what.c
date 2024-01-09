@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <ctype.h>
+#include <string.h>
 
 int	firstonly = 0;
 
@@ -65,7 +66,7 @@ void	what(FILE *f, char *name)
 	}
 }
 
-main(int argc, char **argv)
+int  main(int argc, char **argv)
 {
 	int	haderrs = 0, cnt;
 

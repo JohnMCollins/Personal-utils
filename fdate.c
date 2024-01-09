@@ -13,7 +13,7 @@ void	usage(char *prog)
 	exit(100);
 }
 
-main(int argc, char **argv)
+int  main(int argc, char **argv)
 {
 	int	 ch, aletter = 'm', errors = 0;
 	char	*format	= "%Y/%M/%d";

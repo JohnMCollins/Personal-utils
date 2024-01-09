@@ -6,9 +6,75 @@
 #include <stdlib.h>
 #include <string.h>
 
-int	colcount = 0, currcol =	0, linecount = 1, tabwidth = 4,	changes	= 0, rewritetab	= 0, pendlines = 0, savelength = 0;
+int	colcount = 0,				/* Column number we've got to on output */
+	currcol =	0,				/* Column number we're at on input taking into account tabs and spaces which might be replaced */
+	linecount = 1,
+	intabwidth = 4,				/* Tab width on input */
+	outtabwidth = 4,			/* Tab width on ouput */
+	maxspaces = 1,				/* Maximum number of spaces before we start replacing internal tabs */
+	rewritetab = 0,				/* Replace internal tabs with spaces */
+	changes	= 0,				/* Changes made */
+	pendlines = 0,				/* Count of lines pending to trim trailing \ns */
+	savelength = 0,				/* Length of saved whitespace */
+	instring = 0;				/* If we are in a string, this is the character that started the string */
+
 char	tftempl[] = "/tmp/tabifyXXXXXX";
 char	savewhite[YYLMAX];
+
+/* Output pending newlines after we read new stuff */
+
+void	writependlines()
+{
+	while (pendlines > 0)  {
+		putc('\n', yyout);
+		pendlines--;
+	}
+}
+
+/* Keep tabs on tabs without writing anything */
+
+void	accumwhite()
+{
+	int i;
+	for (i = 0;  i < yyleng;  i++)  {
+		int  ch = yytext[i];
+		savewhite[i] = ch;
+		if (ch == ' ')
+			currcol++;
+		else
+			currcol += intabwidth - currcol % intabwidth;
+		}
+		savelength = yyleng;
+}
+
+/* Output pending white space replacing by tabs where possible */
+
+void	writependspace()
+{
+	int  priospace = colcount > 0;
+
+	if  (currcol != colcount)  {
+		int  newlen = 0;
+		char	newwhite[YYLMAX];
+		while  (currcol	> colcount)  {
+			int  newcol = colcount + outtabwidth - colcount % outtabwidth;
+			if  (newcol > currcol)
+				break;
+			if  (priospace  &&  newcol - colcount <= maxspaces)
+				break;
+			putc('\t', yyout);
+			newwhite[newlen++] = '\t';
+			colcount = newcol;
+		}
+		while  (currcol	> colcount)  {
+			colcount++;
+			putc(' ', yyout);
+			newwhite[newlen++] = ' ';
+		}
+		if  (newlen != savelength || strncmp(newwhite, savewhite, newlen) != 0)
+			changes++;
+	}
+}
 
 %}
 
@@ -16,58 +82,82 @@ char	savewhite[YYLMAX];
 
 [ \t]+$	{	changes++;	}
 "\r"	{	changes++;	}
-"\n"	{	colcount = currcol = 0; pendlines++; linecount++;	}
-^[ \t]+	{	int i;
-			for (i = 0;  i < yyleng;  i++)  {
-				int  ch = yytext[i];
-				savewhite[i] = ch;
-				if (ch == ' ')
-					currcol++;
-				else
-					currcol += tabwidth - currcol % tabwidth;
-			}
-			savelength = yyleng;
-		}
+"\n"	{	colcount = currcol = instring = 0; pendlines++; linecount++;	}
+^[ \t]+	{	accumwhite();	}
 "\f"	{	putc('\n', yyout);	colcount = currcol = 0;	linecount++;  changes++;	}
-\t		{
-			if (rewritetab)  {
-				do {
-					putc(' ', yyout);
-					colcount++;
-				}  while  ((colcount % tabwidth) != 0);
-				changes++;
+"\\'"	{
+			if  (!instring)  {
+				writependlines();
+				writependspace();
+			}
+			ECHO;
+			colcount += yyleng;
+			currcol += yyleng;
+		}
+'\"'	{
+			if  (!instring)  {
+				writependlines();
+				writependspace();
+			}
+			ECHO;
+			colcount += yyleng;
+			currcol += yyleng;
+		}
+\"|\'	{	/* Start or end of string */
+			if  (instring)  {
+				ECHO;
+				colcount++;
+				currcol++;
+				if  (instring == yytext[0])
+					instring = 0;
 			}
 			else  {
+				writependlines();
+				writependspace();
+				instring = yytext[0];
 				ECHO;
-				colcount += tabwidth - colcount % tabwidth;
-				currcol = colcount;
-			}
-		}
-.	{
-		while (pendlines > 0)  {
-			putc('\n', yyout);
-			pendlines--;
-		}
-
-		if  (currcol != colcount)  {
-			int  newlen = 0;
-			char	newwhite[YYLMAX];
-			while  (currcol	> colcount)  {
-				int  newcol = colcount + tabwidth - colcount % tabwidth;
-				if  (newcol > currcol)
-					break;
-				putc('\t', yyout);
-				newwhite[newlen++] = '\t';
-				colcount = newcol;
-			}
-			while  (currcol	> colcount)  {
 				colcount++;
-				putc(' ', yyout);
-				newwhite[newlen++] = ' ';
+				currcol++;
 			}
-			if  (newlen != savelength || strncmp(newwhite, savewhite, newlen) != 0)
-				changes++;
 		}
+[ \t]+	{	/* Spaces or tabs but not at the beginning or end */
+			if (instring)  {
+				int  i, hadtabs = 0;
+				for  (i = 0;  i < yyleng;  i++)  {
+					if  (yytext[i] == '\t')
+						hadtabs++;
+					putc(yytext[i], yyout);
+					currcol++;
+					colcount++;
+				}
+				if  (hadtabs > 0)
+					fprintf(stderr, "Line %d may have tabs in string, edit by hand if needed\n", linecount);
+			}
+			else  if  (rewritetab)  {
+				int  i;
+				for  (i = 0;  i < yyleng;  i++)
+					if  (yytext[i] == ' ')  {
+						putc(' ', yyout);
+						currcol++;
+						colcount++;
+					}
+					else  {
+						do  {
+							putc(' ', yyout);
+							currcol++;
+							colcount++;
+						}  while  (currcol % outtabwidth != 0);
+						changes++;
+					}
+			}
+			else
+				accumwhite();
+	}
+.	{
+		if (!instring)  {
+			writependlines();
+			writependspace();
+		}	
 		ECHO;
 		colcount++;
 		currcol++;
@@ -84,31 +174,41 @@ int main(int argc, char **argv)
 	if  ((tw = getenv("TABWIDTH")))  {
 		int  ntw = atoi(tw);
 		if  (ntw > 1  &&  ntw < 100)
-			tabwidth = ntw;
+			intabwidth = outtabwidth = ntw;
 	}
 
-	while  ((ch = getopt(argc, argv, "t:vRN")) != EOF)  {
+	while  ((ch = getopt(argc, argv, "t:O:I:vNRM:")) != EOF)  {
 		switch	(ch)  {
 		default:
-			fprintf(stderr,	"Usage: %s [ -t n ] [ -o file ] [-R] [file]\n",	argv[0]);
+			fprintf(stderr,	"Usage: %s [ -t n ] [ -I n] [ -O n] [ -o file ] [ -M n [-R] [file]\n",	argv[0]);
 			return	10;
 		case  't':
-			tabwidth = atoi(optarg);
-			if  (tabwidth <= 0)  {
-				fprintf(stderr,	"invalid tab width %s, resetting to 8\n", optarg);
-				return	11;
-			}
+			intabwidth = outtabwidth = atoi(optarg);
 			break;
-		case 'v':
-			verbose++;
+		case 'I':
+			intabwidth = atoi(optarg);
+			break;
+		case 'O':
+			outtabwidth = atoi(optarg);
+			break;
+		case 'M':
+			maxspaces = atoi(optarg);
 			break;
 		case 'R':
 			rewritetab++;
+			break;
+		case 'v':
+			verbose++;
 			break;
 		case 'N':
 			nofinalnl++;
 			break;
 		}
+	}
+	
+	if  (intabwidth <= 1 || outtabwidth <= 1)  {
+		fprintf(stderr,	"invalid tab width(s) in %d or out %d\n", intabwidth, outtabwidth);
+		return	11;
 	}
 
 	for (; argv[optind]; optind++)	{
@@ -154,7 +254,7 @@ int main(int argc, char **argv)
 		fclose(inf);
 		fclose(outf);
 		unlink(tfbuf);
-		linecount = colcount = 0;
+		linecount = colcount = instring = 0;
 	}
 
 	return	errors > 0? 1: 0;
